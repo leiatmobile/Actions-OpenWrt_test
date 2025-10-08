@@ -16,6 +16,9 @@ on:
   repository_dispatch:
   workflow_dispatch:
 
+permissions:
+  contents: write  # This grants permission to write to the repository, which includes creating releases
+
 env:
   REPO_URL: https://github.com/coolsnowwolf/lede
   REPO_BRANCH: master
