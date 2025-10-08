@@ -29,7 +29,7 @@ env:
   UPLOAD_BIN_DIR: false
   UPLOAD_FIRMWARE: true
   UPLOAD_RELEASE: true
-  UPLOAD_GOFILE: true # 新增：启用 GoFile 上传
+  UPLOAD_GOFILE: true
   TZ: Asia/Shanghai
 
 jobs:
@@ -38,13 +38,14 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v4 # 优化：更新为稳定版本 v4
+      uses: actions/checkout@v4
 
     - name: Initialization environment
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
-        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+        # 积极清理系统以释放空间
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/lib/llvm-*
         sudo docker image prune --all --force
         sudo -E apt-get -qq update
         sudo -E apt-get -qq install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp ninja-build p7zip p7zip-full patch pkgconf python2.7 python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
@@ -54,10 +55,26 @@ jobs:
         sudo mkdir -p /workdir
         sudo chown $USER:$GROUPS /workdir
 
+    # --- ccache 缓存以节省空间和时间 ---
+    - name: Cache ccache
+      uses: actions/cache@v4
+      with:
+        path: .ccache
+        key: ${{ github.ref_name }}-${{ github.sha }}-ccache-key
+
+    - name: Setup ccache
+      run: |
+        echo "CCACHE_DIR=$GITHUB_WORKSPACE/.ccache" >> $GITHUB_ENV # 使用 $GITHUB_WORKSPACE 路径
+        echo "CCACHE_MAXSIZE=10G" >> $GITHUB_ENV # 限制 ccache 最大为 10GB
+        ccache -z # 清空统计信息
+        ccache -p # 打印配置
+
+    # ------------------------------------
+
     - name: Clone source code
       working-directory: /workdir
       run: |
-        df -hT $PWD
+        df -hT $PWD # 检查当前空间
         git clone $REPO_URL -b $REPO_BRANCH openwrt
         ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
@@ -103,12 +120,14 @@ jobs:
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
 
     - name: Check space usage
-      if: success() || always() # 优化：使用标准 success() 判断
-      run: df -hT
+      if: success() || always() # 无论编译是否成功，都检查一次
+      run: |
+        df -hT
+        ccache -s # 显示 ccache 统计信息
 
     - name: Organize files
       id: organize
-      if: env.UPLOAD_FIRMWARE == 'true' && success() # 优化：使用标准 success() 判断
+      if: env.UPLOAD_FIRMWARE == 'true' && success()
       run: |
         cd openwrt/bin/targets/*/*
         rm -rf packages
@@ -116,41 +135,41 @@ jobs:
         echo "status=success" >> $GITHUB_OUTPUT
 
     - name: Upload bin directory
-      uses: actions/upload-artifact@v4 # 优化：更新为稳定版本 v4
+      uses: actions/upload-artifact@v4
       if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
       with:
         name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
         path: openwrt/bin
 
     - name: Upload firmware directory
-      uses: actions/upload-artifact@v4 # 优化：更新为稳定版本 v4
-      if: steps.organize.outputs.status == 'success' && success() # 优化：使用标准 success() 判断
+      uses: actions/upload-artifact@v4
+      if: steps.organize.outputs.status == 'success' && success()
       with:
         name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
         path: ${{ env.FIRMWARE }}
         
     - name: Upload firmware to GoFile
       id: gofile
-      uses: stefanprodan/actions-gh-gofile@v1 # 新增：GoFile 上传 Action
+      uses: stefanprodan/actions-gh-gofile@v1
       if: env.UPLOAD_GOFILE == 'true' && steps.organize.outputs.status == 'success'
       with:
         files: ${{ env.FIRMWARE }}/*
-        token: ${{ secrets.GOFILE_TOKEN }} # 假定您已在 Secrets 中设置 GOFILE_TOKEN
+        token: ${{ secrets.GOFILE_TOKEN }} # 假定您已设置 GOFILE_TOKEN
         description: OpenWrt Firmware ${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
         
     - name: Generate release tag
       id: tag
-      if: env.UPLOAD_RELEASE == 'true' && success() # 优化：使用标准 success() 判断
+      if: env.UPLOAD_RELEASE == 'true' && success()
       run: |
         echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
         touch release.txt
-        # 修正：检查 UPLOAD_GOFILE 是否为 true 且 GoFile 步骤输出的 URL 是否存在
+        # 检查 GoFile 是否启用，并且 URL 是否成功输出
         [ "${{ env.UPLOAD_GOFILE }}" = "true" ] && [ "${{ steps.gofile.outputs.url }}" ] && echo "🔗 [GoFile](${{ steps.gofile.outputs.url }})" >> release.txt
         echo "status=success" >> $GITHUB_OUTPUT
 
     - name: Upload firmware to release
-      uses: softprops/action-gh-release@v1 # 优化：更新为稳定版本 v1
-      if: steps.tag.outputs.status == 'success' && success() # 优化：使用标准 success() 判断
+      uses: softprops/action-gh-release@v1
+      if: steps.tag.outputs.status == 'success' && success()
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
@@ -159,14 +178,14 @@ jobs:
         files: ${{ env.FIRMWARE }}/*
 
     - name: Delete workflow runs
-      uses: Mattraks/delete-workflow-runs@v2 # 优化：更新为稳定版本 v2
+      uses: Mattraks/delete-workflow-runs@v2
       with:
         retain_days: 0
         keep_minimum_runs: 2
 
     - name: Remove old Releases
-      uses: dev-drprasad/delete-older-releases@v0.2.1 # 优化：更新为稳定版本
-      if: env.UPLOAD_RELEASE == 'true' && success() # 优化：使用标准 success() 判断
+      uses: dev-drprasad/delete-older-releases@v0.2.1
+      if: env.UPLOAD_RELEASE == 'true' && success()
       with:
         keep_latest: 3
         delete_tags: true
